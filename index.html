@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Mini QWOP</title>
+<meta name="theme-color" content="#0ea5e9" />
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<style>
+  :root { --brand:#0ea5e9; }
+  html, body { margin:0; height:100%; }
+  body { display:flex; flex-direction:column; background:#dff; font-family:system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color:#0b1c24;}
+  #wrap { flex:1; display:flex; flex-direction:column; position:relative; }
+  canvas { flex:1; background:#f4f7f8; border-top:2px solid #333; border-bottom:2px solid #333; width:100vw; height:60vh; touch-action:none; }
+  h1 { text-align:center; margin:8px 0 0; font-size:clamp(20px, 3vw, 28px); }
+  .status { padding: 6px 12px; text-align:center; font-size: 14px; opacity:.7; }
+  .controls {
+    display:grid; grid-template-columns: repeat(4, 1fr);
+    gap: 12px; padding: 12px 16px; background: #e9f7ff; user-select:none; position:sticky; bottom:0;
+  }
+  .btn {
+    font-size: clamp(18px, 4vw, 26px);
+    padding: 16px 0; border-radius: 14px; border: 2px solid #222; background: #fff;
+    box-shadow: 0 2px 0 #222; touch-action: none;
+  }
+  .btn:active { transform: translateY(1px); }
+  .hud {
+    position: absolute; left: 12px; top: 8px; background:#fff8;
+    padding:8px 10px; border-radius:10px; border:1px solid #0003; font-weight:600; backdrop-filter: blur(3px);
+  }
+  .hud2 {
+    position: absolute; right: 12px; top: 8px; background:#fff8;
+    padding:8px 10px; border-radius:10px; border:1px solid #0003; font-weight:600; backdrop-filter: blur(3px);
+  }
+  .overlay {
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none;
+  }
+  .card {
+    pointer-events:auto;
+    background:#fff; border:2px solid #111; border-radius:16px; padding:16px 16px 18px; text-align:center;
+    box-shadow: 0 8px 0 #111; width:min(480px, 92vw);
+  }
+  .card h2 { margin:4px 0 8px; }
+  .card p { margin:6px 0 12px; color:#113a46; }
+  .row { display:flex; gap:8px; justify-content:center; flex-wrap:wrap;}
+  .primary, .secondary {
+    font-size:16px; padding:12px 16px; border-radius:12px; border:2px solid #111; cursor:pointer;
+  }
+  .primary { background:var(--brand); color:#fff; box-shadow:0 3px 0 #0a6da1; }
+  .secondary { background:#fff; }
+  .footer { text-align:center; font-size:12px; padding:6px 0 10px; color:#333a; }
+  .pill { display:inline-block; padding:4px 8px; border-radius:999px; border:1px solid #0003; background:#fff8; margin-left:6px; font-size:12px;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>Mini QWOP</h1>
+  <div class="status">Goal: reach the finish line! Multi-touch supported. Install from Chrome → Add to Home screen.</div>
+  <div class="hud" id="hud">0.00 m • Best: 0.00 m</div>
+  <div class="hud2" id="hud2">Time: 0.00 s<span class="pill" id="goalpill">Goal: 50 m</span></div>
+  <div class="overlay" id="overlay" hidden>
+    <div class="card">
+      <h2 id="ov-title">Mini QWOP</h2>
+      <p id="ov-sub">Q/W move thighs. O/P move calves. Reach the <b>50 m</b> finish line quickly and don’t fall.</p>
+      <div class="row">
+        <button id="btn-start" class="primary">Start</button>
+        <button id="btn-how" class="secondary">How to Play</button>
+        <button id="btn-opts" class="secondary">Options</button>
+      </div>
+    </div>
+  </div>
+  <canvas id="game"></canvas>
+
+  <div class="controls">
+    <button class="btn" data-key="q">Q</button>
+    <button class="btn" data-key="w">W</button>
+    <button class="btn" data-key="o">O</button>
+    <button class="btn" data-key="p">P</button>
+  </div>
+  <div class="footer">v3 • Finish line + timer + ragdoll fall • Works offline</div>
+</div>
+
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
+}
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+function fitCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const h = Math.max(320, Math.min(window.innerHeight * 0.6, 720));
+  canvas.style.height = h + 'px';
+  canvas.style.width = '100vw';
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener('resize', fitCanvas, {passive:true});
+fitCanvas();
+
+const overlay = document.getElementById('overlay');
+const hud = document.getElementById('hud');
+const hud2 = document.getElementById('hud2');
+const ovTitle = document.getElementById('ov-title');
+const ovSub = document.getElementById('ov-sub');
+const btnStart = document.getElementById('btn-start');
+const btnHow = document.getElementById('btn-how');
+const btnOpts = document.getElementById('btn-opts');
+const goalpill = document.getElementById('goalpill');
+
+const STATE = { MENU:0, PLAYING:1, RAGDOLL:2 };
+let state = STATE.MENU;
+let best = Number(localStorage.getItem('qwop-best') || 0);
+
+let runner, groundY, startX, distance, startTime, elapsed;
+let GOAL_M = Number(localStorage.getItem('qwop-goal') || 50);
+
+goalpill.textContent = `Goal: ${GOAL_M} m`;
+
+const GRAVITY = 0.7;
+const FRICTION = 0.85;
+const STEP_POWER = 0.45;
+const MAX_ANGLE = Math.PI/2;
+
+function resetRunner() {
+  groundY = Math.floor(canvas.height/2);
+  startX = 120;
+  runner = {
+    x: startX,
+    y: groundY,
+    vx: 0,
+    vy: 0,
+    thighL: 0.2,
+    thighR: -0.2,
+    calfL: 0.2,
+    calfR: -0.2,
+    onGround: true
+  };
+  distance = 0;
+  elapsed = 0;
+}
+resetRunner();
+function clamp(v, min, max){ return v<min?min:v>max?max:v; }
+
+function pressKey(k) {
+  switch(k){
+    case 'q': runner.thighL = clamp(runner.thighL + 0.12, -MAX_ANGLE, MAX_ANGLE); stepBoost(-1); break;
+    case 'w': runner.thighR = clamp(runner.thighR + 0.12, -MAX_ANGLE, MAX_ANGLE); stepBoost(+1); break;
+    case 'o': runner.calfL  = clamp(runner.calfL  + 0.12, -MAX_ANGLE, MAX_ANGLE); break;
+    case 'p': runner.calfR  = clamp(runner.calfR  + 0.12, -MAX_ANGLE, MAX_ANGLE); break;
+  }
+  if (navigator.vibrate) navigator.vibrate(8);
+}
+function stepBoost(dir){
+  if (runner.onGround) runner.vx += STEP_POWER * dir;
+}
+addEventListener('keydown', e=>{
+  const k = e.key.toLowerCase();
+  if (['q','w','o','p'].includes(k)) {
+    if (state===STATE.MENU) startGame();
+    pressKey(k);
+  }
+});
+document.querySelectorAll('.btn').forEach(btn=>{
+  const k = btn.dataset.key;
+  let hold;
+  const down = ev => { if (state===STATE.MENU) startGame(); pressKey(k); ev.preventDefault(); };
+  btn.addEventListener('pointerdown', down);
+  btn.addEventListener('pointerdown', ()=>{ hold=setInterval(()=>pressKey(k), 65); });
+  ['pointerup','pointercancel','pointerleave'].forEach(t=> btn.addEventListener(t, ()=>clearInterval(hold)));
+});
+document.querySelector('.controls').addEventListener('touchmove', e=>e.preventDefault(), {passive:false});
+canvas.addEventListener('click', async()=>{
+  if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+    try { await document.documentElement.requestFullscreen(); } catch(e){}
+  }
+});
+
+btnStart.addEventListener('click', startGame);
+btnHow.addEventListener('click', ()=>{
+  ovTitle.textContent = "How to Play";
+  ovSub.innerHTML = "• Q/W = thighs, O/P = calves.<br>• Alternate Q & W, pulse O/P for ankle action.<br>• Keep rhythm, avoid extreme angles.<br>• Reach the finish line as fast as you can.";
+});
+btnOpts.addEventListener('click', ()=>{
+  const m = prompt("Set finish line distance (meters):", String(GOAL_M));
+  if (!m) return;
+  const v = Math.max(10, Math.min(400, Number(m)||50));
+  GOAL_M = v;
+  localStorage.setItem('qwop-goal', v);
+  goalpill.textContent = `Goal: ${v} m`;
+});
+
+function showMenu(title="Mini QWOP", sub="Q/W move thighs. O/P move calves. Reach the finish line quickly and don’t fall."){
+  ovTitle.textContent = title;
+  ovSub.innerHTML = sub;
+  overlay.hidden = false;
+  state = STATE.MENU;
+}
+function startGame(){
+  resetRunner();
+  startTime = performance.now();
+  overlay.hidden = true;
+  state = STATE.PLAYING;
+}
+
+// Ragdoll (Verlet) shown after fall
+let rag = null;
+function makeRagdoll(x, y){
+  // points: head, neck, hip, kneeL, ankleL, kneeR, ankleR, handL, handR
+  const pts = [
+    {x:x, y:y-120}, // head
+    {x:x, y:y-100}, // neck
+    {x:x, y:y-50},  // hip
+    {x:x-18, y:y-20}, // kneeL
+    {x:x-18, y:y+10}, // ankleL
+    {x:x+18, y:y-20}, // kneeR
+    {x:x+18, y:y+10}, // ankleR
+    {x:x-35, y:y-70}, // handL
+    {x:x+35, y:y-70}, // handR
+  ].map(p=>({x:p.x, y:p.y, px:p.x, py:p.y}));
+  const sticks = [
+    [0,1], [1,2], // head-neck-hip
+    [2,3], [3,4], // left leg
+    [2,5], [5,6], // right leg
+    [1,7], [1,8]  // arms
+  ].map(([a,b])=>({a, b, len:dist(pts[a], pts[b])}));
+  return {pts, sticks};
+}
+function dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy); }
+function ragdollStep(r){
+  // verlet integration
+  for (const p of r.pts){
+    const vx = (p.x - p.px)*0.98;
+    const vy = (p.y - p.py)*0.98 + GRAVITY;
+    p.px = p.x; p.py = p.y;
+    p.x += vx; p.y += vy;
+    // ground
+    if (p.y > groundY) { p.y = groundY; p.py = p.y; }
+  }
+  // satisfy constraints
+  for (let iter=0; iter<4; iter++){
+    for (const s of r.sticks){
+      const a = r.pts[s.a], b=r.pts[s.b];
+      const dx=b.x-a.x, dy=b.y-a.y;
+      const d=Math.hypot(dx,dy)||0.0001;
+      const diff = (d - s.len)/d;
+      const ox = dx*0.5*diff, oy = dy*0.5*diff;
+      a.x += ox; a.y += oy;
+      b.x -= ox; b.y -= oy;
+    }
+  }
+}
+function drawRagdoll(r){
+  ctx.lineWidth=5; ctx.strokeStyle="#000";
+  for (const s of r.sticks){
+    const a=r.pts[s.a], b=r.pts[s.b];
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  }
+  const head=r.pts[0];
+  ctx.beginPath(); ctx.arc(head.x, head.y, 20, 0, Math.PI*2); ctx.stroke();
+}
+
+function applyPhysics(){
+  runner.vy += GRAVITY;
+  runner.y += runner.vy;
+  runner.x += runner.vx;
+  runner.vx *= FRICTION;
+  if (runner.y > groundY) { runner.y = groundY; runner.vy = 0; runner.onGround = true; } else { runner.onGround=false; }
+  distance = Math.max(0, (runner.x - startX) / 60);
+  if (state===STATE.PLAYING){
+    const now = performance.now();
+    elapsed = (now - startTime)/1000;
+  }
+}
+
+function fellOver(){
+  const tooForward = runner.vx > 4 && !runner.onGround;
+  const extremeAngles = Math.abs(runner.thighL) > 1.25 || Math.abs(runner.thighR) > 1.25;
+  return tooForward || extremeAngles;
+}
+
+function drawRunner(){
+  const {x,y,thighL,thighR,calfL,calfR} = runner;
+  ctx.lineWidth = 5; ctx.strokeStyle = "#000";
+
+  // torso
+  ctx.beginPath(); ctx.moveTo(x, y-100); ctx.lineTo(x, y-50); ctx.stroke();
+  // head
+  ctx.beginPath(); ctx.arc(x, y-120, 20, 0, Math.PI*2); ctx.stroke();
+  // arms
+  ctx.beginPath(); ctx.moveTo(x, y-90); ctx.lineTo(x-40, y-70);
+  ctx.moveTo(x, y-90); ctx.lineTo(x+40, y-70); ctx.stroke();
+
+  // left leg
+  ctx.beginPath();
+  ctx.moveTo(x, y-50);
+  const kLX = x - 30 * Math.cos(thighL);
+  const kLY = y - 50 + 30 * Math.sin(thighL);
+  ctx.lineTo(kLX, kLY);
+  ctx.lineTo(kLX - 30 * Math.cos(calfL), kLY + 30 * Math.sin(calfL));
+  ctx.stroke();
+
+  // right leg
+  ctx.beginPath();
+  ctx.moveTo(x, y-50);
+  const kRX = x + 30 * Math.cos(thighR);
+  const kRY = y - 50 + 30 * Math.sin(thighR);
+  ctx.lineTo(kRX, kRY);
+  ctx.lineTo(kRX + 30 * Math.cos(calfR), kRY + 30 * Math.sin(calfR));
+  ctx.stroke();
+}
+
+function drawBackground(){
+  ctx.fillStyle = "#dff"; ctx.fillRect(0,0,canvas.width,canvas.height);
+  // horizon
+  ctx.fillStyle = "#cbeaf6";
+  const horizon = canvas.height*0.45;
+  ctx.fillRect(0,horizon,canvas.width,canvas.height-horizon);
+
+  // track & ticks
+  const trackY = groundY;
+  ctx.strokeStyle = "#000"; ctx.lineWidth=5;
+  ctx.beginPath(); ctx.moveTo(0, trackY); ctx.lineTo(canvas.width, trackY); ctx.stroke();
+  for (let i=0;i<canvas.width;i+=60){
+    ctx.beginPath(); ctx.moveTo(i, trackY); ctx.lineTo(i, trackY-8); ctx.stroke();
+  }
+
+  // finish line
+  const finishX = startX + GOAL_M*60;
+  // draw a flag relative to camera (no camera translation; we simply show if in view)
+  if (finishX > 0 && finishX < canvas.width){
+    // pole
+    ctx.strokeStyle = "#333"; ctx.lineWidth=4;
+    ctx.beginPath(); ctx.moveTo(finishX, trackY); ctx.lineTo(finishX, trackY-120); ctx.stroke();
+    // flag
+    ctx.fillStyle = "#fff"; ctx.fillRect(finishX, trackY-120, 24, 24);
+    ctx.fillStyle = "#000";
+    for (let r=0;r<3;r++){
+      for (let c=0;c<3;c++){
+        if ((r+c)%2===0) ctx.fillRect(finishX+8*c, trackY-120+8*r, 8, 8);
+      }
+    }
+  }
+}
+
+function maybeWin(){
+  if (distance >= GOAL_M){
+    const time = elapsed.toFixed(2);
+    // store best time for this goal?
+    const key = 'qwop-best-time-'+GOAL_M;
+    const prev = Number(localStorage.getItem(key) || 0);
+    if (prev===0 || elapsed < prev) localStorage.setItem(key, elapsed.toFixed(2));
+    const bestTime = localStorage.getItem(key);
+    best = Math.max(best, distance);
+    localStorage.setItem('qwop-best', best.toFixed(2));
+    showMenu("🏁 You finished!",
+      `Distance: ${distance.toFixed(2)} m<br>Time: <b>${time}s</b><br>Best ${GOAL_M} m time: <b>${bestTime}s</b>`);
+    return true;
+  }
+  return false;
+}
+
+let last = performance.now();
+function loop(now){
+  const dt = (now - last)/16.67; last = now;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  drawBackground();
+
+  if (state===STATE.PLAYING){
+    for (let i=0;i<Math.max(1, Math.min(3, Math.round(dt))); i++){
+      applyPhysics();
+      if (maybeWin()) break;
+      if (fellOver()){
+        best = Math.max(best, distance);
+        localStorage.setItem('qwop-best', best.toFixed(2));
+        // create ragdoll from current pose
+        rag = makeRagdoll(runner.x, runner.y);
+        state = STATE.RAGDOLL;
+        setTimeout(()=>{
+          showMenu("You fell!",
+            `Distance: ${distance.toFixed(2)} m • Best: ${best.toFixed(2)} m<br><small>Tip: alternate Q & W and pulse O/P</small>`);
+        }, 900);
+        break;
+      }
+    }
+  } else if (state===STATE.RAGDOLL && rag){
+    // simulate ragdoll for fun
+    for (let i=0;i<2;i++) ragdollStep(rag);
+  }
+
+  if (state===STATE.RAGDOLL && rag) {
+    drawRagdoll(rag);
+  } else {
+    drawRunner();
+  }
+
+  hud.textContent = `${distance.toFixed(2)} m • Best: ${best.toFixed(2)} m`;
+  hud2.textContent = `Time: ${elapsed.toFixed(2)} s`;
+  // re-add goal pill
+  const span = document.createElement('span');
+  span.className = 'pill'; span.id='goalpill'; span.textContent = `Goal: ${GOAL_M} m`;
+  hud2.appendChild(span);
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+showMenu();
+</script>
+</body>
+</html>

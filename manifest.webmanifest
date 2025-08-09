@@ -1,0 +1,20 @@
+{
+  "name": "Mini QWOP",
+  "short_name": "QWOP",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#dff",
+  "theme_color": "#0ea5e9",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
